@@ -1,0 +1,115 @@
+name: "Personal Windows Build"
+
+# Auto-builds a Windows MSI installer of the `personal` branch and publishes
+# it to a rolling GitHub Release tagged `personal-latest`. Both PCs install
+# from one URL; each push to `personal` updates the release in place.
+#
+# Download URL (after first successful run):
+#   https://github.com/normbarrette-arch/Handy/releases/tag/personal-latest
+
+on:
+  push:
+    branches: [personal]
+    paths-ignore:
+      - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Enable long paths (Windows)
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+          git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: personal-windows-x64
+
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: true
+
+      # whisper-rs-sys cmake builds create paths that exceed Windows MAX_PATH.
+      - name: Shorten build path
+        shell: pwsh
+        run: |
+          $drive = Split-Path -Qualifier $env:GITHUB_WORKSPACE
+          $targetDir = "$drive\t"
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          echo "CARGO_TARGET_DIR=$targetDir" >> $env:GITHUB_ENV
+
+      - name: Install JS deps
+        run: bun install
+
+      - name: Build Tauri (release, MSI only)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable AVX/FMA/F16C/AVX2 for CPU compatibility — Vulkan handles
+          # heavy compute on the GPU so this has negligible impact.
+          GGML_NATIVE: "OFF"
+          GGML_AVX: "OFF"
+          GGML_AVX2: "OFF"
+          GGML_FMA: "OFF"
+          GGML_F16C: "OFF"
+        with:
+          args: "--bundles msi"
+
+      - name: Locate built MSI
+        id: find-msi
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "$env:CARGO_TARGET_DIR\release\bundle\msi\*.msi" |
+                 Select-Object -First 1
+          if (-not $msi) { throw "No MSI found under $env:CARGO_TARGET_DIR" }
+          echo "msi-path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          echo "msi-name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+          echo "Found MSI: $($msi.FullName)"
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: personal-latest
+          name: "Personal build (latest)"
+          prerelease: true
+          # action-gh-release v2 replaces existing assets with the same name,
+          # so each push overwrites the prior MSI in place.
+          files: ${{ steps.find-msi.outputs.msi-path }}
+          fail_on_unmatched_files: true
+          body: |
+            Automated build of the `personal` branch.
+
+            **Includes:**
+            - Focus-restore fix for issue #315 (Windows + Linux X11)
+
+            **Source:** commit `${{ github.sha }}`
+            **Built:** ${{ github.run_started_at }}
+
+            ## Install
+            1. Quit any running Handy (tray → Quit).
+            2. Download `${{ steps.find-msi.outputs.msi-name }}` below.
+            3. Run the installer.
+            4. Launch Handy. Reconfigure post-processing if needed
+               (Advanced → Experimental → Post Processing toggle).

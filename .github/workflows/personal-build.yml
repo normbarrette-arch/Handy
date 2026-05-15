@@ -1,11 +1,10 @@
 name: "Personal Windows Build"
 
-# Auto-builds a Windows MSI installer of the `personal` branch and publishes
-# it to a rolling GitHub Release tagged `personal-latest`. Both PCs install
-# from one URL; each push to `personal` updates the release in place.
-#
-# Download URL (after first successful run):
-#   https://github.com/normbarrette-arch/Handy/releases/tag/personal-latest
+# Auto-builds a signed Windows MSI of the `personal` branch and publishes
+# it to a rolling GitHub Release tagged `personal-latest`. Includes signed
+# `latest.json` so Handy's built-in updater can auto-upgrade installed
+# copies. Both PCs install the first MSI once; every subsequent push
+# updates them automatically.
 
 on:
   push:
@@ -19,11 +18,17 @@ on:
 permissions:
   contents: write
 
+# Cancel a previous run on the same branch when a new push comes in —
+# saves CI minutes during rapid iteration.
+concurrency:
+  group: personal-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Enable long paths (Windows)
+      - name: Enable long paths
         shell: pwsh
         run: |
           New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
@@ -32,6 +37,24 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Bump tauri.conf.json version to a monotonically-increasing build
+      # number so the updater detects each new build as newer. We start at
+      # patch=100 to stay above the upstream 0.8.x line without colliding.
+      - name: Bump version
+        shell: pwsh
+        run: |
+          $patch = 100 + ${{ github.run_number }}
+          $newVersion = "0.8.$patch"
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $config.version = $newVersion
+          # Preserve key order is impossible with ConvertTo-Json on PSCustomObject,
+          # so use a regex replace on the raw text instead.
+          $raw = Get-Content src-tauri/tauri.conf.json -Raw
+          $raw = $raw -replace '"version":\s*"[^"]+"', "`"version`": `"$newVersion`""
+          Set-Content -Path src-tauri/tauri.conf.json -Value $raw -NoNewline
+          echo "BUILD_VERSION=$newVersion" >> $env:GITHUB_ENV
+          Write-Host "Built version: $newVersion"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -63,53 +86,43 @@ jobs:
       - name: Install JS deps
         run: bun install
 
-      - name: Build Tauri (release, MSI only)
+      # tauri-action builds the MSI, signs it with TAURI_SIGNING_PRIVATE_KEY
+      # (creating .msi.sig), generates latest.json with the embedded signed
+      # signature, then uploads all three to the release at `tagName`. If
+      # the release already exists, assets are replaced in place.
+      - name: Build + sign + publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           # Disable AVX/FMA/F16C/AVX2 for CPU compatibility — Vulkan handles
-          # heavy compute on the GPU so this has negligible impact.
+          # heavy compute on the GPU so the perf impact is negligible.
           GGML_NATIVE: "OFF"
           GGML_AVX: "OFF"
           GGML_AVX2: "OFF"
           GGML_FMA: "OFF"
           GGML_F16C: "OFF"
         with:
-          args: "--bundles msi"
-
-      - name: Locate built MSI
-        id: find-msi
-        shell: pwsh
-        run: |
-          $msi = Get-ChildItem -Path "$env:CARGO_TARGET_DIR\release\bundle\msi\*.msi" |
-                 Select-Object -First 1
-          if (-not $msi) { throw "No MSI found under $env:CARGO_TARGET_DIR" }
-          echo "msi-path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
-          echo "msi-name=$($msi.Name)" >> $env:GITHUB_OUTPUT
-          echo "Found MSI: $($msi.FullName)"
-
-      - name: Publish rolling release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: personal-latest
-          name: "Personal build (latest)"
+          tagName: personal-latest
+          releaseName: "Personal build ${{ env.BUILD_VERSION }}"
           prerelease: true
-          # action-gh-release v2 replaces existing assets with the same name,
-          # so each push overwrites the prior MSI in place.
-          files: ${{ steps.find-msi.outputs.msi-path }}
-          fail_on_unmatched_files: true
-          body: |
+          releaseBody: |
             Automated build of the `personal` branch.
 
-            **Includes:**
-            - Focus-restore fix for issue #315 (Windows + Linux X11)
+            **Version:** `${{ env.BUILD_VERSION }}`
+            **Includes:** focus-restore fix (#315) for Windows + Linux X11.
+            **Source:** commit `${{ github.sha }}`.
 
-            **Source:** commit `${{ github.sha }}`
-            **Built:** ${{ github.run_started_at }}
-
-            ## Install
+            ## First-time install
             1. Quit any running Handy (tray → Quit).
-            2. Download `${{ steps.find-msi.outputs.msi-name }}` below.
+            2. Download the MSI below.
             3. Run the installer.
             4. Launch Handy. Reconfigure post-processing if needed
                (Advanced → Experimental → Post Processing toggle).
+
+            ## Subsequent updates
+            Already-installed copies of this build will auto-update via
+            Handy's built-in updater (checks against the signed
+            `latest.json` attached to this release).
+          args: "--bundles msi"

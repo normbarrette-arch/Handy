@@ -605,6 +605,11 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         paste_method, paste_delay_ms
     );
 
+    // Restore the window that had focus when the hotkey was pressed.
+    // No-op on non-Windows and when nothing was captured. This must happen
+    // before any enigo work so keystrokes land on the right target.
+    crate::focus::restore_foreground(&app_handle);
+
     // Get the managed Enigo instance
     let enigo_state = app_handle
         .try_state::<EnigoState>()

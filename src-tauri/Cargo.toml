@@ -94,6 +94,8 @@ windows = { version = "0.61.3", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Variant",
   "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
@@ -106,6 +108,10 @@ transcribe-rs = { version = "0.3.3", features = ["whisper-metal"] }
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }
 gtk = "0.18"
 transcribe-rs = { version = "0.3.3", features = ["whisper-vulkan"] }
+# Pure-Rust X11 client (no C deps) used by focus.rs to capture and restore
+# the previously-focused window on X11 sessions. Wayland is unsupported by
+# design — see focus.rs module doc.
+x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code"] }
 
 [patch.crates-io]
 tauri-runtime = { git = "https://github.com/cjpais/tauri.git", branch = "handy-2.10.2" }

@@ -36,6 +36,15 @@ pub fn handle_shortcut_event(
 
     // Transcribe bindings are handled by the coordinator.
     if is_transcribe_binding(binding_id) {
+        // Capture the user's intended target window the instant the hotkey
+        // goes down, before any Handy UI activates. The captured HWND is
+        // restored just before keystroke synthesis in clipboard::paste so
+        // transcribed text lands in the right place even if focus shifts
+        // (recording overlay activation, user click-aways, etc).
+        if is_pressed {
+            crate::focus::capture_foreground(app);
+        }
+
         if let Some(coordinator) = app.try_state::<TranscriptionCoordinator>() {
             coordinator.send_input(binding_id, hotkey_string, is_pressed, settings.push_to_talk);
         } else {

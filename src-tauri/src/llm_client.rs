@@ -1,8 +1,29 @@
 use crate::settings::PostProcessProvider;
 use log::debug;
+use once_cell::sync::Lazy;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
+use std::time::Duration;
+
+/// Per-(provider, base_url, api_key) cached reqwest clients. Building a
+/// client is cheap, but a fresh one means a cold TLS handshake to the
+/// provider on every utterance (~100-300 ms to openrouter.ai). Reusing the
+/// client keeps the connection pool warm so subsequent calls skip the
+/// handshake entirely.
+static CLIENT_CACHE: Lazy<Mutex<HashMap<u64, reqwest::Client>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Total request budget. Cleanup completions are short; if the provider
+/// stalls past this we fail fast so the overlay/tray don't hang forever.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// Connect-phase budget (TLS + DNS). Distinct from the overall timeout so a
+/// dead endpoint is detected quickly rather than after the full window.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize)]
 struct ChatMessage {
@@ -42,6 +63,22 @@ struct ChatCompletionRequest {
     reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfig>,
+    /// Deterministic cleanup wants temperature 0; omitted if None so a
+    /// provider's own default applies for callers that don't set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    /// Hard ceiling on generated tokens. Cleanup output is never longer
+    /// than its input, so a runaway can't burn the full context window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+}
+
+/// Generation knobs threaded from the caller. Grouped so the two
+/// `send_*` signatures don't grow another two positional args each.
+#[derive(Debug, Clone, Default)]
+pub struct GenerationParams {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,13 +133,35 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
     Ok(headers)
 }
 
-/// Create an HTTP client with provider-specific headers
+/// Get (or build and cache) an HTTP client for this provider+key. The
+/// auth headers are baked into `default_headers`, so the cache key must
+/// include the api key — keyed by a hash to avoid holding the raw secret
+/// as a map key. Connection pool stays warm across calls.
 fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwest::Client, String> {
+    let mut hasher = DefaultHasher::new();
+    provider.id.hash(&mut hasher);
+    provider.base_url.hash(&mut hasher);
+    api_key.hash(&mut hasher);
+    let cache_key = hasher.finish();
+
+    if let Ok(cache) = CLIENT_CACHE.lock() {
+        if let Some(client) = cache.get(&cache_key) {
+            return Ok(client.clone());
+        }
+    }
+
     let headers = build_headers(provider, api_key)?;
-    reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    if let Ok(mut cache) = CLIENT_CACHE.lock() {
+        cache.insert(cache_key, client.clone());
+    }
+    Ok(client)
 }
 
 /// Send a chat completion request to an OpenAI-compatible API
@@ -115,6 +174,7 @@ pub async fn send_chat_completion(
     prompt: String,
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
+    params: GenerationParams,
 ) -> Result<Option<String>, String> {
     send_chat_completion_with_schema(
         provider,
@@ -125,6 +185,7 @@ pub async fn send_chat_completion(
         None,
         reasoning_effort,
         reasoning,
+        params,
     )
     .await
 }
@@ -143,6 +204,7 @@ pub async fn send_chat_completion_with_schema(
     json_schema: Option<Value>,
     reasoning_effort: Option<String>,
     reasoning: Option<ReasoningConfig>,
+    params: GenerationParams,
 ) -> Result<Option<String>, String> {
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base_url);
@@ -184,6 +246,8 @@ pub async fn send_chat_completion_with_schema(
         response_format,
         reasoning_effort,
         reasoning,
+        temperature: params.temperature,
+        max_tokens: params.max_tokens,
     };
 
     let response = client

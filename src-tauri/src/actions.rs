@@ -13,7 +13,7 @@ use crate::utils::{
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
-use log::{debug, error, warn};
+use log::{debug, error};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,9 +48,6 @@ pub trait ShortcutAction: Send + Sync {
 struct TranscribeAction {
     post_process: bool,
 }
-
-/// Field name for structured output JSON schema
-const TRANSCRIPTION_FIELD: &str = "transcription";
 
 /// Strip invisible Unicode characters that some LLMs may insert
 fn strip_invisible_chars(s: &str) -> String {
@@ -141,9 +138,17 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
         _ => (None, None),
     };
 
-    if provider.supports_structured_output {
-        debug!("Using structured outputs for provider '{}'", provider.id);
+    // Deterministic cleanup: pin temperature to 0 and cap output at ~2x
+    // the input token estimate (cleanup never expands text materially).
+    // ~4 chars/token is a safe rule of thumb for English; clamp so very
+    // short and very long utterances both get a sane ceiling.
+    let approx_input_tokens = (transcription.chars().count() / 4).max(1) as u32;
+    let gen_params = crate::llm_client::GenerationParams {
+        temperature: Some(0.0),
+        max_tokens: Some((approx_input_tokens * 2).clamp(256, 4096)),
+    };
 
+    {
         let system_prompt = build_system_prompt(&prompt);
         let user_content = transcription.to_string();
 
@@ -191,107 +196,44 @@ async fn post_process_transcription(settings: &AppSettings, transcription: &str)
             }
         }
 
-        // Define JSON schema for transcription output
-        let json_schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                (TRANSCRIPTION_FIELD): {
-                    "type": "string",
-                    "description": "The cleaned and processed transcription text"
-                }
-            },
-            "required": [TRANSCRIPTION_FIELD],
-            "additionalProperties": false
-        });
-
+        // Plain-text completion: system = cleanup instructions, user = raw
+        // transcription. No JSON-schema wrapper — the task returns a single
+        // string, so the schema only added output tokens, a parse step, and
+        // a fragile raw-content fallback. Splitting system/user also avoids
+        // re-sending the instruction block concatenated with the text.
         match crate::llm_client::send_chat_completion_with_schema(
             &provider,
-            api_key.clone(),
+            api_key,
             &model,
             user_content,
             Some(system_prompt),
-            Some(json_schema),
-            reasoning_effort.clone(),
-            reasoning.clone(),
+            None,
+            reasoning_effort,
+            reasoning,
+            gen_params,
         )
         .await
         {
             Ok(Some(content)) => {
-                // Parse the JSON response to extract the transcription field
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(json) => {
-                        if let Some(transcription_value) =
-                            json.get(TRANSCRIPTION_FIELD).and_then(|t| t.as_str())
-                        {
-                            let result = strip_invisible_chars(transcription_value);
-                            debug!(
-                                "Structured output post-processing succeeded for provider '{}'. Output length: {} chars",
-                                provider.id,
-                                result.len()
-                            );
-                            return Some(result);
-                        } else {
-                            error!("Structured output response missing 'transcription' field");
-                            return Some(strip_invisible_chars(&content));
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to parse structured output JSON: {}. Returning raw content.",
-                            e
-                        );
-                        return Some(strip_invisible_chars(&content));
-                    }
-                }
+                let result = strip_invisible_chars(&content);
+                debug!(
+                    "LLM post-processing succeeded for provider '{}'. Output length: {} chars",
+                    provider.id,
+                    result.len()
+                );
+                Some(result)
             }
             Ok(None) => {
                 error!("LLM API response has no content");
-                return None;
+                None
             }
             Err(e) => {
-                warn!(
-                    "Structured output failed for provider '{}': {}. Falling back to legacy mode.",
+                error!(
+                    "LLM post-processing failed for provider '{}': {}. Falling back to original transcription.",
                     provider.id, e
                 );
-                // Fall through to legacy mode below
+                None
             }
-        }
-    }
-
-    // Legacy mode: Replace ${output} variable in the prompt with the actual text
-    let processed_prompt = prompt.replace("${output}", transcription);
-    debug!("Processed prompt length: {} chars", processed_prompt.len());
-
-    match crate::llm_client::send_chat_completion(
-        &provider,
-        api_key,
-        &model,
-        processed_prompt,
-        reasoning_effort,
-        reasoning,
-    )
-    .await
-    {
-        Ok(Some(content)) => {
-            let content = strip_invisible_chars(&content);
-            debug!(
-                "LLM post-processing succeeded for provider '{}'. Output length: {} chars",
-                provider.id,
-                content.len()
-            );
-            Some(content)
-        }
-        Ok(None) => {
-            error!("LLM API response has no content");
-            None
-        }
-        Err(e) => {
-            error!(
-                "LLM post-processing failed for provider '{}': {}. Falling back to original transcription.",
-                provider.id,
-                e
-            );
-            None
         }
     }
 }

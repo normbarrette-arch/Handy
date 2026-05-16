@@ -65,7 +65,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCMzg5MDZGQzkxODQ0NjcKUldSblJCakpiNUE0cTl1RTIzbTRJNWtoNFRYMXBNRXE2MWVqQnE3UndEaXFTOVNrSStCQmcrYzgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCM0Q1MkE1NUVBRjVENEEKUldSS1hhOWVwVkk5YTRiaHZGbTV0Q0FLcS9XRXVjTVA2Y2p4bG9KSHA2bVhLdklQdE9zLzBNMVMK",
       "endpoints": [
         "https://github.com/normbarrette-arch/Handy/releases/download/personal-latest/latest.json"
       ]

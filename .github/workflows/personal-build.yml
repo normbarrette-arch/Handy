@@ -67,6 +67,7 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
           key: personal-windows-x64
+          cache-on-failure: true
 
       - name: Install Vulkan SDK
         uses: humbletim/install-vulkan-sdk@v1.2
@@ -95,7 +96,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Disable AVX/FMA/F16C/AVX2 for CPU compatibility — Vulkan handles
           # heavy compute on the GPU so the perf impact is negligible.
           GGML_NATIVE: "OFF"

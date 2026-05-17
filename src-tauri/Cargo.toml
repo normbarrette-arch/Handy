@@ -69,6 +69,11 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 tar = "0.4.44"
 flate2 = "1.0"
 sha2 = "0.10"
+# NOTE: this default (0.3.8, whisper-cpp+onnx) only applies to targets
+# without a per-OS override below. Windows/macOS/Linux each pin 0.3.3
+# with platform-specific accel features (whisper-vulkan/-metal,
+# ort-directml). Keep the per-OS pins and this default in sync when
+# bumping — a silent divergence makes cross-platform bugs hard to trace.
 transcribe-rs = { version = "0.3.8", features = ["whisper-cpp", "onnx"] }
 handy-keys = "0.2.4"
 ferrous-opencc = "0.2.3"
@@ -113,6 +118,11 @@ transcribe-rs = { version = "0.3.3", features = ["whisper-vulkan"] }
 # design — see focus.rs module doc.
 x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code"] }
 
+# Upstream Handy maintains a forked Tauri (cjpais/tauri @ handy-2.10.2)
+# for patches not yet in a Tauri release. Do NOT bump the `tauri`
+# dependency past 2.10.2 without first checking this branch exists for
+# the new version — a mismatch breaks the build. This is upstream's
+# burden; the fork inherits it unchanged.
 [patch.crates-io]
 tauri-runtime = { git = "https://github.com/cjpais/tauri.git", branch = "handy-2.10.2" }
 tauri-runtime-wry = { git = "https://github.com/cjpais/tauri.git", branch = "handy-2.10.2" }

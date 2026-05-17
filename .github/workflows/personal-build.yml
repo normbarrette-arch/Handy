@@ -87,26 +87,6 @@ jobs:
       - name: Install JS deps
         run: bun install
 
-      # Purge every asset on the rolling release before publishing. Asset
-      # filenames carry the version (Handy_0.8.NNN_x64-setup.exe), so
-      # softprops/tauri-action only *replaces same-named* files — old
-      # versions (and the legacy .msi from before the NSIS switch) would
-      # otherwise pile up and confuse the updater + manual downloaders.
-      - name: Purge stale release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view personal-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release view personal-latest --repo "$GITHUB_REPOSITORY" \
-              --json assets -q '.assets[].name' | while read -r asset; do
-              [ -n "$asset" ] && gh release delete-asset personal-latest "$asset" \
-                --repo "$GITHUB_REPOSITORY" --yes || true
-            done
-          else
-            echo "No existing release; nothing to purge."
-          fi
-
       # tauri-action builds the NSIS setup.exe, signs it with
       # TAURI_SIGNING_PRIVATE_KEY (creating .sig), generates latest.json
       # with the embedded signed signature, then uploads all three to the
@@ -149,3 +129,29 @@ jobs:
             tray → Check for updates → footer "Update available".
             NSIS + passive install, no UAC.
           args: "--bundles nsis"
+
+      # Prune AFTER a successful publish, not before. tauri-action has
+      # already uploaded the new version's setup.exe + .sig + latest.json,
+      # so deleting only the non-current assets here means the release is
+      # never empty — even mid-build it still serves the previous version.
+      # Also fix the release name: tauri-action sets it on creation but
+      # won't rename an existing rolling release, so it goes stale.
+      - name: Prune old assets + refresh release name
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          keep="${BUILD_VERSION}"
+          echo "Keeping assets for version $keep"
+          gh release view personal-latest --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[].name' | while read -r asset; do
+            [ -z "$asset" ] && continue
+            case "$asset" in
+              *"$keep"*|latest.json) echo "keep  $asset" ;;
+              *) echo "prune $asset"
+                 gh release delete-asset personal-latest "$asset" \
+                   --repo "$GITHUB_REPOSITORY" --yes || true ;;
+            esac
+          done
+          gh release edit personal-latest --repo "$GITHUB_REPOSITORY" \
+            --title "Personal build $keep" || true

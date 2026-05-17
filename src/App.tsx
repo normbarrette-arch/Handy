@@ -137,6 +137,20 @@ function App() {
     };
   }, [t]);
 
+  // Listen for focus-restore failures (Windows foreground-lock denied even
+  // after the AttachThreadInput retry) and warn the user — otherwise the
+  // transcription silently lands in the wrong window.
+  useEffect(() => {
+    const unlisten = listen("focus-restore-failed", () => {
+      toast.error(t("errors.focusRestoreFailedTitle"), {
+        description: t("errors.focusRestoreFailed"),
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [t]);
+
   // Listen for model loading failures and show a toast
   useEffect(() => {
     const unlisten = listen<ModelStateEvent>("model-state-changed", (event) => {

@@ -599,7 +599,9 @@
     "modelLoadFailed": "Failed to load model: {{model}}",
     "modelLoadFailedUnknown": "unknown model",
     "pasteFailedTitle": "Failed to Paste Text",
-    "pasteFailed": "Text could not be pasted into the active application."
+    "pasteFailed": "Text could not be pasted into the active application.",
+    "focusRestoreFailedTitle": "Could Not Restore Focus",
+    "focusRestoreFailed": "Windows blocked focus from returning to your app — the text may have landed in the wrong window."
   },
   "appLanguage": {
     "title": "Application Language",

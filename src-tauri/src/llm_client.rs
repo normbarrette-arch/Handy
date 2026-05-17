@@ -164,37 +164,14 @@ fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<reqwes
     Ok(client)
 }
 
-/// Send a chat completion request to an OpenAI-compatible API
-/// Returns Ok(Some(content)) on success, Ok(None) if response has no content,
-/// or Err on actual errors (HTTP, parsing, etc.)
-pub async fn send_chat_completion(
-    provider: &PostProcessProvider,
-    api_key: String,
-    model: &str,
-    prompt: String,
-    reasoning_effort: Option<String>,
-    reasoning: Option<ReasoningConfig>,
-    params: GenerationParams,
-) -> Result<Option<String>, String> {
-    send_chat_completion_with_schema(
-        provider,
-        api_key,
-        model,
-        prompt,
-        None,
-        None,
-        reasoning_effort,
-        reasoning,
-        params,
-    )
-    .await
-}
-
-/// Send a chat completion request with structured output support
-/// When json_schema is provided, uses structured outputs mode
-/// system_prompt is used as the system message when provided
-/// reasoning_effort sets the OpenAI-style top-level field (e.g., "none", "low", "medium", "high")
-/// reasoning sets the OpenRouter-style nested object (effort + exclude)
+/// Send a chat completion request with optional structured output.
+/// When `json_schema` is provided, uses structured-outputs mode;
+/// `system_prompt` becomes the system message when present.
+/// `reasoning_effort` is the OpenAI-style top-level field; `reasoning`
+/// is the OpenRouter-style nested object.
+// Args map 1:1 to provider/request knobs; bundling them into a struct
+// would obscure call sites more than it helps.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_chat_completion_with_schema(
     provider: &PostProcessProvider,
     api_key: String,

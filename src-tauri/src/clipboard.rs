@@ -4,10 +4,18 @@ use crate::settings::TypingTool;
 use crate::settings::{get_settings, AutoSubmitKey, ClipboardHandling, PasteMethod};
 use enigo::{Direction, Enigo, Key, Keyboard};
 use log::info;
+#[cfg(target_os = "linux")]
+use once_cell::sync::Lazy;
 use std::process::Command;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+
+/// After sending the paste keystroke we must hold the injected text on the
+/// clipboard long enough for the target app to read it before we restore
+/// the user's original clipboard contents. Too short and fast apps paste
+/// stale/empty; this is a deliberate guard, not an arbitrary sleep.
+const CLIPBOARD_RESTORE_GUARD_MS: u64 = 50;
 
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};
@@ -61,7 +69,7 @@ fn paste_via_clipboard(
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(CLIPBOARD_RESTORE_GUARD_MS));
 
     // Restore original clipboard content
     // On Wayland, prefer wl-copy for better compatibility
@@ -221,63 +229,57 @@ pub fn get_available_typing_tools() -> Vec<String> {
     tools
 }
 
-/// Check if wtype is available (Wayland text input tool)
+/// `which <tool>` succeeds. Installed CLI tools don't appear/disappear
+/// during a process run, so each probe is resolved once and cached —
+/// previously this forked `which` on every single paste.
 #[cfg(target_os = "linux")]
-fn is_wtype_available() -> bool {
+fn tool_on_path(tool: &str) -> bool {
     Command::new("which")
-        .arg("wtype")
+        .arg(tool)
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+/// Check if wtype is available (Wayland text input tool)
+#[cfg(target_os = "linux")]
+fn is_wtype_available() -> bool {
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("wtype"));
+    *AVAIL
 }
 
 /// Check if dotool is available (another Wayland text input tool)
 #[cfg(target_os = "linux")]
 fn is_dotool_available() -> bool {
-    Command::new("which")
-        .arg("dotool")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("dotool"));
+    *AVAIL
 }
 
 /// Check if ydotool is available (uinput-based, works on both Wayland and X11)
 #[cfg(target_os = "linux")]
 fn is_ydotool_available() -> bool {
-    Command::new("which")
-        .arg("ydotool")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("ydotool"));
+    *AVAIL
 }
 
 #[cfg(target_os = "linux")]
 fn is_xdotool_available() -> bool {
-    Command::new("which")
-        .arg("xdotool")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("xdotool"));
+    *AVAIL
 }
 
 /// Check if kwtype is available (KDE Wayland virtual keyboard input tool)
 #[cfg(target_os = "linux")]
 fn is_kwtype_available() -> bool {
-    Command::new("which")
-        .arg("kwtype")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("kwtype"));
+    *AVAIL
 }
 
 /// Check if wl-copy is available (Wayland clipboard tool)
 #[cfg(target_os = "linux")]
 fn is_wl_copy_available() -> bool {
-    Command::new("which")
-        .arg("wl-copy")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    static AVAIL: Lazy<bool> = Lazy::new(|| tool_on_path("wl-copy"));
+    *AVAIL
 }
 
 /// Type text directly via wtype on Wayland.
@@ -605,12 +607,10 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         paste_method, paste_delay_ms
     );
 
-    // Restore the window that had focus when the hotkey was pressed.
-    // No-op on non-Windows and when nothing was captured. This must happen
-    // before any enigo work so keystrokes land on the right target.
-    crate::focus::restore_foreground(&app_handle);
-
-    // Get the managed Enigo instance
+    // Acquire the Enigo lock FIRST, then restore focus. Holding the lock
+    // across restore→keystroke makes that window atomic w.r.t. other
+    // paste callers: nothing else can synthesize input (and bounce focus)
+    // between the focus restore and the actual keystroke.
     let enigo_state = app_handle
         .try_state::<EnigoState>()
         .ok_or("Enigo state not initialized")?;
@@ -618,6 +618,11 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         .0
         .lock()
         .map_err(|e| format!("Failed to lock Enigo: {}", e))?;
+
+    // Restore the window that had focus when the hotkey was pressed.
+    // No-op on non-Windows and when nothing was captured. Must happen
+    // before any enigo work so keystrokes land on the right target.
+    crate::focus::restore_foreground(&app_handle);
 
     // Perform the paste operation
     match paste_method {

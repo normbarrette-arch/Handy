@@ -172,18 +172,46 @@ pub fn change_binding(
         return Err(e);
     }
 
-    // Create an updated binding
-    let mut updated_binding = binding_to_modify;
+    // Create an updated binding (keep the original for rollback below)
+    let mut updated_binding = binding_to_modify.clone();
     updated_binding.current_binding = binding;
 
     // Register the new binding
     if let Err(e) = register_shortcut(&app, updated_binding.clone()) {
-        let error_msg = format!("Failed to register shortcut: {}", e);
-        error!("change_binding error: {}", error_msg);
+        // Make the common conflict case actionable instead of a raw
+        // "Hotkey already registered: <combo>" dump.
+        let lower = e.to_lowercase();
+        let user_msg = if lower.contains("already registered") || lower.contains("already in use") {
+            format!(
+                "The shortcut \"{}\" is already used by another Handy binding. \
+                 Pick a different combination, or clear the other binding first.",
+                updated_binding.current_binding
+            )
+        } else {
+            format!("Failed to register shortcut: {}", e)
+        };
+        error!("change_binding error: {} ({})", user_msg, e);
+
+        // Roll back: the old binding was unregistered above. Without this
+        // it stays unregistered until an app restart (the "stuck shortcut"
+        // bug). Re-register the previous binding so the user keeps a
+        // working shortcut.
+        if let Err(re) = register_shortcut(&app, binding_to_modify.clone()) {
+            error!(
+                "change_binding rollback failed: could not re-register previous binding '{}': {}",
+                binding_to_modify.current_binding, re
+            );
+        } else {
+            warn!(
+                "change_binding: rolled back '{}' to previous binding '{}'",
+                id, binding_to_modify.current_binding
+            );
+        }
+
         return Ok(BindingResponse {
             success: false,
-            binding: None,
-            error: Some(error_msg),
+            binding: Some(binding_to_modify),
+            error: Some(user_msg),
         });
     }
 

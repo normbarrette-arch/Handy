@@ -33,6 +33,8 @@
 
 use std::sync::Mutex;
 use tauri::AppHandle;
+#[cfg(target_os = "windows")]
+use tauri::Emitter;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use tauri::Manager;
 
@@ -56,12 +58,15 @@ pub fn capture_foreground(app: &AppHandle) {
     }
 
     match app.try_state::<TargetWindow>() {
-        Some(state) => {
-            if let Ok(mut guard) = state.0.lock() {
+        Some(state) => match state.0.lock() {
+            Ok(mut guard) => {
                 *guard = Some(hwnd.0 as isize);
                 log::debug!("focus: captured target HWND {:?}", hwnd.0);
             }
-        }
+            Err(_) => {
+                log::warn!("focus: TargetWindow mutex poisoned; cannot capture");
+            }
+        },
         None => {
             log::warn!("focus: TargetWindow state not managed; cannot capture");
         }
@@ -80,13 +85,19 @@ pub fn capture_foreground(app: &AppHandle) {
         return;
     };
 
-    let Some(state) = app.try_state::<TargetWindow>() else {
-        log::warn!("focus: TargetWindow state not managed; cannot capture");
-        return;
-    };
-    if let Ok(mut guard) = state.0.lock() {
-        *guard = Some(window as isize);
-        log::debug!("focus: captured target X11 window {:#x}", window);
+    match app.try_state::<TargetWindow>() {
+        Some(state) => match state.0.lock() {
+            Ok(mut guard) => {
+                *guard = Some(window as isize);
+                log::debug!("focus: captured target X11 window {:#x}", window);
+            }
+            Err(_) => {
+                log::warn!("focus: TargetWindow mutex poisoned; cannot capture");
+            }
+        },
+        None => {
+            log::warn!("focus: TargetWindow state not managed; cannot capture");
+        }
     }
 }
 
@@ -139,26 +150,49 @@ pub fn restore_foreground(app: &AppHandle) {
         let our_tid = GetCurrentThreadId();
         let should_attach = target_tid != 0 && target_tid != our_tid;
 
-        // windows 0.61 wrapper takes `bool` (not `BOOL`) and converts internally.
-        let attached = if should_attach {
-            AttachThreadInput(our_tid, target_tid, true).as_bool()
-        } else {
-            false
-        };
+        // One attempt = attach our input queue to the target thread (lets
+        // SetForegroundWindow bypass the foreground-lock policy), call it,
+        // detach. Retry once after a short yield: the WM occasionally
+        // rejects the first call right after our overlay hides, then
+        // accepts it a few ms later.
+        let mut ok = false;
+        for attempt in 0..2 {
+            // windows 0.61 wrapper takes `bool` (not `BOOL`) and converts.
+            let attached = if should_attach {
+                AttachThreadInput(our_tid, target_tid, true).as_bool()
+            } else {
+                false
+            };
 
-        let ok = SetForegroundWindow(hwnd).as_bool();
+            ok = SetForegroundWindow(hwnd).as_bool();
 
-        if attached {
-            let _ = AttachThreadInput(our_tid, target_tid, false);
+            if attached {
+                let _ = AttachThreadInput(our_tid, target_tid, false);
+            }
+
+            if ok {
+                log::debug!(
+                    "focus: restored foreground to HWND {:?} (attempt {})",
+                    hwnd.0,
+                    attempt + 1
+                );
+                break;
+            }
+
+            if attempt == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
         }
 
-        if ok {
-            log::debug!("focus: restored foreground to HWND {:?}", hwnd.0);
-        } else {
+        if !ok {
             log::warn!(
-                "focus: SetForegroundWindow failed for HWND {:?} (attached={attached})",
+                "focus: SetForegroundWindow denied for HWND {:?} after retry; \
+                 paste may land in the wrong window",
                 hwnd.0
             );
+            // Surface it: a silent misdirect is the worst failure mode.
+            // App.tsx toasts on this (same pattern as `paste-error`).
+            let _ = app.emit("focus-restore-failed", ());
         }
     }
 }
@@ -206,18 +240,17 @@ pub fn restore_foreground(_app: &AppHandle) {
 
 #[cfg(target_os = "linux")]
 mod linux_x11 {
+    use once_cell::sync::Lazy;
     use std::env;
+    use std::sync::Mutex;
     use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{
-        ClientMessageEvent, ConnectionExt as _, EventMask, InputFocus,
-    };
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask, InputFocus};
     use x11rb::rust_connection::RustConnection;
     use x11rb::CURRENT_TIME;
 
-    /// True when the current session is X11 (or XWayland with no native
-    /// Wayland display). On pure Wayland sessions we never attempt focus
-    /// tracking — the X server may not even be running.
-    pub fn is_x11_session() -> bool {
+    /// Session type is fixed for the process lifetime, so probe the env
+    /// once instead of on every keystroke + paste.
+    static IS_X11: Lazy<bool> = Lazy::new(|| {
         if env::var("WAYLAND_DISPLAY")
             .ok()
             .map(|v| !v.is_empty())
@@ -229,63 +262,100 @@ mod linux_x11 {
             .ok()
             .map(|v| !v.is_empty())
             .unwrap_or(false)
+    });
+
+    /// True when the current session is X11 (or XWayland with no native
+    /// Wayland display). On pure Wayland sessions we never attempt focus
+    /// tracking — the X server may not even be running.
+    pub fn is_x11_session() -> bool {
+        *IS_X11
+    }
+
+    struct XConn {
+        conn: RustConnection,
+        screen: usize,
+    }
+
+    /// One process-lifetime X11 connection instead of a fresh
+    /// connect()/teardown on every capture + restore. Cleared on any
+    /// connection-level error so the next call transparently reconnects
+    /// (handles X server restart / display change).
+    static CONN: Lazy<Mutex<Option<XConn>>> = Lazy::new(|| Mutex::new(None));
+
+    /// Run `f` against the cached connection, establishing it on first
+    /// use. The closure returns `Err(())` for connection-level failures
+    /// (which invalidate the cache for a lazy reconnect) vs `Ok` for
+    /// normal results — a transient "no focused window" must NOT drop the
+    /// connection.
+    fn with_conn<T>(f: impl FnOnce(&RustConnection, usize) -> Result<T, ()>) -> Option<T> {
+        let mut guard = CONN.lock().ok()?;
+        if guard.is_none() {
+            match RustConnection::connect(None) {
+                Ok((conn, screen)) => *guard = Some(XConn { conn, screen }),
+                Err(_) => return None,
+            }
+        }
+        let xc = guard.as_ref()?;
+        match f(&xc.conn, xc.screen) {
+            Ok(v) => Some(v),
+            Err(()) => {
+                // Connection is likely dead — drop it so the next call
+                // reconnects from scratch.
+                *guard = None;
+                None
+            }
+        }
     }
 
     /// Capture the currently-focused X11 window via `GetInputFocus`.
     /// Returns `None` if the connection fails, the focus is the root, or
     /// the server reports `None`/`PointerRoot`.
     pub fn capture() -> Option<u32> {
-        let (conn, _screen) = RustConnection::connect(None).ok()?;
-        let reply = conn.get_input_focus().ok()?.reply().ok()?;
-        let win = reply.focus;
-        // 0 == None, 1 == PointerRoot (per X protocol). Neither is a
-        // usable target window.
-        if win <= 1 {
-            return None;
-        }
-        Some(win)
+        with_conn(|conn, _screen| {
+            let reply = conn
+                .get_input_focus()
+                .map_err(|_| ())?
+                .reply()
+                .map_err(|_| ())?;
+            let win = reply.focus;
+            // 0 == None, 1 == PointerRoot (per X protocol). Neither is a
+            // usable target window — but this is a normal transient state,
+            // not a connection failure, so report Ok(None) (keep the conn).
+            Ok(if win <= 1 { None } else { Some(win) })
+        })
+        .flatten()
     }
 
     /// Restore focus to `window` using EWMH `_NET_ACTIVE_WINDOW` plus a
     /// best-effort `SetInputFocus`. Returns true if the ClientMessage was
     /// dispatched.
     pub fn restore(window: u32) -> bool {
-        let Ok((conn, screen_num)) = RustConnection::connect(None) else {
-            return false;
-        };
-        let root = match conn.setup().roots.get(screen_num) {
-            Some(s) => s.root,
-            None => return false,
-        };
+        with_conn(|conn, screen| {
+            let root = conn.setup().roots.get(screen).ok_or(())?.root;
 
-        let net_active_atom = match conn.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
-            Ok(cookie) => match cookie.reply() {
-                Ok(reply) => reply.atom,
-                Err(_) => return false,
-            },
-            Err(_) => return false,
-        };
+            let net_active_atom = conn
+                .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+                .map_err(|_| ())?
+                .reply()
+                .map_err(|_| ())?
+                .atom;
 
-        // EWMH spec: data.l[0] = source (1 = normal app), data.l[1] =
-        // timestamp, data.l[2] = currently-active window (0 if unknown),
-        // data.l[3..] = zero.
-        let event = ClientMessageEvent::new(
-            32,
-            window,
-            net_active_atom,
-            [1u32, CURRENT_TIME, 0, 0, 0],
-        );
+            // EWMH spec: data.l[0] = source (1 = normal app), data.l[1] =
+            // timestamp, data.l[2] = currently-active window (0 if
+            // unknown), data.l[3..] = zero.
+            let event =
+                ClientMessageEvent::new(32, window, net_active_atom, [1u32, CURRENT_TIME, 0, 0, 0]);
 
-        let mask = EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT;
-        if conn.send_event(false, root, mask, event).is_err() {
-            return false;
-        }
+            let mask = EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT;
+            conn.send_event(false, root, mask, event).map_err(|_| ())?;
 
-        // Belt-and-braces: also issue SetInputFocus. EWMH-aware WMs will
-        // honour the ClientMessage; un-aware ones (rare) at least move
-        // keyboard focus.
-        let _ = conn.set_input_focus(InputFocus::PARENT, window, CURRENT_TIME);
-        let _ = conn.flush();
-        true
+            // Belt-and-braces: also issue SetInputFocus. EWMH-aware WMs
+            // honour the ClientMessage; un-aware ones (rare) at least move
+            // keyboard focus.
+            let _ = conn.set_input_focus(InputFocus::PARENT, window, CURRENT_TIME);
+            let _ = conn.flush();
+            Ok(())
+        })
+        .is_some()
     }
 }

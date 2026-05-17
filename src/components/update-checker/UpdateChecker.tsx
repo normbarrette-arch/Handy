@@ -4,7 +4,14 @@ import { toast } from "sonner";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+
+// Bridge updater diagnostics into handy.log (frontend has no file logger).
+const ulog = (level: "info" | "warn" | "error", message: string) => {
+  // Fire-and-forget; never let logging throw into the updater flow.
+  invoke("log_frontend", { level, message }).catch(() => {});
+};
 import { ProgressBar } from "../shared";
 import { useSettings } from "../../hooks/useSettings";
 import { commands } from "../../bindings";
@@ -103,29 +110,50 @@ const UpdateChecker: React.FC<UpdateCheckerProps> = ({ className = "" }) => {
   const installUpdate = async () => {
     if (!updateChecksEnabled) return;
 
-    const portable = await commands.isPortable();
-    if (portable) {
-      setShowPortableUpdateDialog(true);
-      return;
-    }
-
+    // EVERYTHING is inside try/catch now. The isPortable() call used to
+    // be outside it — if that binding rejected, installUpdate rejected
+    // unhandled: no toast, no log, "nothing happens on click".
     try {
+      ulog("info", "installUpdate: clicked");
+
+      const portable = await commands.isPortable();
+      ulog("info", `installUpdate: isPortable=${portable}`);
+      if (portable) {
+        setShowPortableUpdateDialog(true);
+        return;
+      }
+
       setIsInstalling(true);
       setDownloadProgress(0);
       downloadedBytesRef.current = 0;
       contentLengthRef.current = 0;
+
+      ulog("info", "installUpdate: calling check()");
       const update = await check();
+      ulog(
+        "info",
+        `installUpdate: check() => ${
+          update ? `update ${update.version}` : "null (no update)"
+        }`,
+      );
 
       if (!update) {
-        console.log("No update available during install attempt");
+        toast.error(t("footer.updateFailedTitle"), {
+          description: "No update returned on install attempt.",
+        });
         return;
       }
 
+      ulog("info", "installUpdate: downloadAndInstall start");
       await update.downloadAndInstall((event) => {
         switch (event.event) {
           case "Started":
             downloadedBytesRef.current = 0;
             contentLengthRef.current = event.data.contentLength ?? 0;
+            ulog(
+              "info",
+              `download Started, contentLength=${contentLengthRef.current}`,
+            );
             break;
           case "Progress":
             downloadedBytesRef.current += event.data.chunkLength;
@@ -138,15 +166,19 @@ const UpdateChecker: React.FC<UpdateCheckerProps> = ({ className = "" }) => {
                 : 0;
             setDownloadProgress(Math.min(progress, 100));
             break;
+          case "Finished":
+            ulog("info", "download Finished");
+            break;
         }
       });
+      ulog("info", "installUpdate: downloadAndInstall returned; relaunching");
       await relaunch();
     } catch (error) {
-      // Was console-only — invisible to the user, who just saw "Update
-      // available" sit there forever. Surface it.
+      const msg = error instanceof Error ? error.message : String(error);
+      ulog("error", `installUpdate failed: ${msg}`);
       console.error("Failed to install update:", error);
       toast.error(t("footer.updateFailedTitle"), {
-        description: String(error),
+        description: msg,
       });
     } finally {
       setIsInstalling(false);

@@ -20,6 +20,20 @@ pub fn is_portable() -> bool {
     crate::portable::is_portable()
 }
 
+/// Bridge webview-side diagnostics into handy.log. The frontend has no
+/// access to the Rust file logger, so updater errors etc. were only
+/// visible in devtools. This lets the UI write them where we can read
+/// them remotely.
+#[tauri::command]
+#[specta::specta]
+pub fn log_frontend(level: String, message: String) {
+    match level.as_str() {
+        "error" => log::error!("[frontend] {}", message),
+        "warn" => log::warn!("[frontend] {}", message),
+        _ => log::info!("[frontend] {}", message),
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_dir_path(app: AppHandle) -> Result<String, String> {

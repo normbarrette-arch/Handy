@@ -87,10 +87,32 @@ jobs:
       - name: Install JS deps
         run: bun install
 
-      # tauri-action builds the MSI, signs it with TAURI_SIGNING_PRIVATE_KEY
-      # (creating .msi.sig), generates latest.json with the embedded signed
-      # signature, then uploads all three to the release at `tagName`. If
-      # the release already exists, assets are replaced in place.
+      # Purge every asset on the rolling release before publishing. Asset
+      # filenames carry the version (Handy_0.8.NNN_x64-setup.exe), so
+      # softprops/tauri-action only *replaces same-named* files — old
+      # versions (and the legacy .msi from before the NSIS switch) would
+      # otherwise pile up and confuse the updater + manual downloaders.
+      - name: Purge stale release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view personal-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release view personal-latest --repo "$GITHUB_REPOSITORY" \
+              --json assets -q '.assets[].name' | while read -r asset; do
+              [ -n "$asset" ] && gh release delete-asset personal-latest "$asset" \
+                --repo "$GITHUB_REPOSITORY" --yes || true
+            done
+          else
+            echo "No existing release; nothing to purge."
+          fi
+
+      # tauri-action builds the NSIS setup.exe, signs it with
+      # TAURI_SIGNING_PRIVATE_KEY (creating .sig), generates latest.json
+      # with the embedded signed signature, then uploads all three to the
+      # release at `tagName`. NSIS (not MSI) because Tauri's Windows
+      # auto-updater needs the per-user setup.exe + installMode:passive —
+      # MSI auto-update stalls on the msiexec UAC elevation.
       - name: Build + sign + publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -115,15 +137,15 @@ jobs:
             **Includes:** focus-restore fix (#315) for Windows + Linux X11.
             **Source:** commit `${{ github.sha }}`.
 
-            ## First-time install
+            ## First-time install (one-time transition from MSI)
             1. Quit any running Handy (tray → Quit).
-            2. Download the MSI below.
-            3. Run the installer.
+            2. Download the `*-setup.exe` below.
+            3. Run it (per-user install, no admin prompt).
             4. Launch Handy. Reconfigure post-processing if needed
                (Advanced → Experimental → Post Processing toggle).
 
             ## Subsequent updates
-            Already-installed copies of this build will auto-update via
-            Handy's built-in updater (checks against the signed
-            `latest.json` attached to this release).
-          args: "--bundles msi"
+            From this build onward, in-app update works end-to-end:
+            tray → Check for updates → footer "Update available".
+            NSIS + passive install, no UAC.
+          args: "--bundles nsis"

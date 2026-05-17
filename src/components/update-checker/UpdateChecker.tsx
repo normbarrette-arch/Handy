@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
@@ -141,7 +142,12 @@ const UpdateChecker: React.FC<UpdateCheckerProps> = ({ className = "" }) => {
       });
       await relaunch();
     } catch (error) {
+      // Was console-only — invisible to the user, who just saw "Update
+      // available" sit there forever. Surface it.
       console.error("Failed to install update:", error);
+      toast.error(t("footer.updateFailedTitle"), {
+        description: String(error),
+      });
     } finally {
       setIsInstalling(false);
       setDownloadProgress(0);
@@ -203,7 +209,9 @@ const UpdateChecker: React.FC<UpdateCheckerProps> = ({ className = "" }) => {
               <button
                 className="px-3 py-1.5 text-sm rounded bg-logo-primary text-white hover:bg-logo-primary/80 transition-colors"
                 onClick={() => {
-                  openUrl("https://github.com/cjpais/Handy/releases/latest");
+                  openUrl(
+                    "https://github.com/normbarrette-arch/Handy/releases/tag/personal-latest",
+                  );
                   setShowPortableUpdateDialog(false);
                 }}
               >

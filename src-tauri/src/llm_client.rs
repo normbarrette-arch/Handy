@@ -227,24 +227,52 @@ pub async fn send_chat_completion_with_schema(
         max_tokens: params.max_tokens,
     };
 
-    let response = client
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    // Retry once on transient failures only. 429 / 5xx / connect /
+    // timeout are worth a second try; 4xx (bad key, bad model, malformed
+    // request) will never succeed on retry, so fail fast.
+    const MAX_ATTEMPTS: u32 = 2;
+    const RETRY_BACKOFF: Duration = Duration::from_millis(300);
 
-    let status = response.status();
-    if !status.is_success() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Failed to read error response".to_string());
-        return Err(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        ));
+    let mut response = None;
+    let mut last_err = String::from("LLM request failed");
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.post(&url).json(&request_body).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    response = Some(resp);
+                    break;
+                }
+                let code = status.as_u16();
+                let body = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "Failed to read error response".to_string());
+                last_err = format!("API request failed with status {}: {}", status, body);
+                let retryable = code == 429 || (500..=599).contains(&code);
+                if !retryable || attempt == MAX_ATTEMPTS {
+                    return Err(last_err);
+                }
+                debug!(
+                    "LLM request attempt {}/{} failed (status {}); retrying",
+                    attempt, MAX_ATTEMPTS, code
+                );
+            }
+            Err(e) => {
+                let retryable = e.is_timeout() || e.is_connect();
+                last_err = format!("HTTP request failed: {}", e);
+                if !retryable || attempt == MAX_ATTEMPTS {
+                    return Err(last_err);
+                }
+                debug!(
+                    "LLM request attempt {}/{} errored ({}); retrying",
+                    attempt, MAX_ATTEMPTS, e
+                );
+            }
+        }
+        tokio::time::sleep(RETRY_BACKOFF).await;
     }
+    let response = response.ok_or(last_err)?;
 
     let completion: ChatCompletionResponse = response
         .json()

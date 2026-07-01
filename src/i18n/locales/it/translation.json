@@ -358,6 +358,18 @@
         "duplicate": "\"{{word}}\" esiste già"
       }
     },
+    "dictationCommands": {
+      "title": "Spoken Formatting Commands",
+      "description": "Speak commands like \"new line\", \"new paragraph\", \"period\", or \"comma\" and have them turn into real line breaks and punctuation. Toggle individual commands off if you dictate one of the words literally. Works best with the Ctrl+V paste method.",
+      "phrasePlaceholder": "Spoken phrase (e.g. new line)",
+      "replacementPlaceholder": "Inserts",
+      "add": "Add",
+      "reset": "Reset to defaults",
+      "resetFailed": "Failed to reset commands",
+      "duplicate": "\"{{phrase}}\" already exists",
+      "remove": "Remove {{phrase}}",
+      "toggle": "Toggle {{phrase}}"
+    },
     "postProcessing": {
       "title": "Post-Elaborazione",
       "hotkey": {
@@ -540,6 +552,7 @@
     }
   },
   "footer": {
+    "updateFailedTitle": "Update failed",
     "downloadingModel": "Download di {{model}}...",
     "checkingUpdates": "Controllo aggiornamenti...",
     "updateAvailable": "Aggiornamento disponibile: {{version}}",
@@ -585,6 +598,8 @@
     "dismiss": "Ignora"
   },
   "errors": {
+    "focusRestoreFailedTitle": "Could Not Restore Focus",
+    "focusRestoreFailed": "Windows blocked focus from returning to your app — the text may have landed in the wrong window.",
     "loadDirectory": "Errore di caricamento cartella: {{error}}",
     "micPermissionDeniedTitle": "Accesso al microfono negato",
     "micPermissionDenied": {

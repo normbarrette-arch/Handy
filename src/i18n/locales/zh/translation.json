@@ -358,6 +358,18 @@
         "duplicate": "\"{{word}}\" 已存在"
       }
     },
+    "dictationCommands": {
+      "title": "Spoken Formatting Commands",
+      "description": "Speak commands like \"new line\", \"new paragraph\", \"period\", or \"comma\" and have them turn into real line breaks and punctuation. Toggle individual commands off if you dictate one of the words literally. Works best with the Ctrl+V paste method.",
+      "phrasePlaceholder": "Spoken phrase (e.g. new line)",
+      "replacementPlaceholder": "Inserts",
+      "add": "Add",
+      "reset": "Reset to defaults",
+      "resetFailed": "Failed to reset commands",
+      "duplicate": "\"{{phrase}}\" already exists",
+      "remove": "Remove {{phrase}}",
+      "toggle": "Toggle {{phrase}}"
+    },
     "postProcessing": {
       "title": "后处理",
       "hotkey": {
@@ -540,6 +552,7 @@
     }
   },
   "footer": {
+    "updateFailedTitle": "Update failed",
     "downloadingModel": "正在下载 {{model}}...",
     "checkingUpdates": "检查更新中...",
     "updateAvailable": "有可用更新: {{version}}",
@@ -585,6 +598,8 @@
     "dismiss": "关闭"
   },
   "errors": {
+    "focusRestoreFailedTitle": "Could Not Restore Focus",
+    "focusRestoreFailed": "Windows blocked focus from returning to your app — the text may have landed in the wrong window.",
     "loadDirectory": "加载目录时出错: {{error}}",
     "micPermissionDeniedTitle": "麦克风访问被拒绝",
     "micPermissionDenied": {

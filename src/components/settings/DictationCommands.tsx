@@ -69,7 +69,8 @@ export const DictationCommands: React.FC<DictationCommandsProps> = React.memo(
       try {
         const res = await tauriCommands.resetSpokenCommands();
         if (res.status === "ok") {
-          // Reflect the restored defaults in the store without a second write.
+          // resetSpokenCommands already persisted the defaults server-side;
+          // this keeps the Zustand store in sync via the normal update path.
           persist(res.data);
         }
       } catch (e) {

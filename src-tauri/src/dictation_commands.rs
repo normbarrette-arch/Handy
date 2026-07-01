@@ -144,11 +144,18 @@ fn expand_commands(text: &str, enabled: bool, commands: &[SpokenCommand]) -> Str
         let Some(re) = phrase_regex(&cmd.phrase) else {
             continue;
         };
+        // Strip any sentinels from the (user-editable) replacement so a
+        // stray marker char can't corrupt span parsing in render().
+        let safe_replacement: String = cmd
+            .replacement
+            .chars()
+            .filter(|&c| c != MARK_START && c != MARK_END)
+            .collect();
         let marker = format!(
             "{}{}{}{}",
             MARK_START,
             classify(cmd).tag(),
-            cmd.replacement,
+            safe_replacement,
             MARK_END
         );
         // NoExpand: replacement may contain `$` (dollar-sign command).
@@ -197,7 +204,11 @@ fn render(marked: &str) -> String {
     for seg in segs {
         match seg {
             Seg::Text(raw) => {
-                let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+                // Trim only the segment edges — inter-segment spacing is
+                // handled by the glue/separator logic below. Do NOT collapse
+                // internal whitespace: that would flatten intentional spacing
+                // in command-free text (a side effect beyond this feature).
+                let normalized = raw.trim();
                 if normalized.is_empty() {
                     continue;
                 }
@@ -206,10 +217,10 @@ fn render(marked: &str) -> String {
                 }
                 glue = false;
                 if cap_next && normalized.chars().any(|c| c.is_alphabetic()) {
-                    out.push_str(&capitalize_first(&normalized));
+                    out.push_str(&capitalize_first(normalized));
                     cap_next = false;
                 } else {
-                    out.push_str(&normalized);
+                    out.push_str(normalized);
                 }
             }
             Seg::Cmd(kind, payload) => match kind {

@@ -200,6 +200,14 @@ fn render(marked: &str) -> String {
     let mut out = String::new();
     let mut cap_next = true; // capitalize the first alphabetic char of output
     let mut glue = false; // suppress the separator space before the next piece
+    // Speech models auto-insert a comma at every pause, and users pause around
+    // spoken commands ("... version, new line, how ..."). Such a pause-comma
+    // adjacent to a break/terminator is spurious, but a comma the user
+    // *dictated* (a Clause command) is intentional. `last_was_clause` tells the
+    // two apart; `drop_leading_punct` strips a pause-comma that landed at the
+    // start of the next line/sentence.
+    let mut last_was_clause = false;
+    let mut drop_leading_punct = false;
 
     for seg in segs {
         match seg {
@@ -208,7 +216,13 @@ fn render(marked: &str) -> String {
                 // handled by the glue/separator logic below. Do NOT collapse
                 // internal whitespace: that would flatten intentional spacing
                 // in command-free text (a side effect beyond this feature).
-                let normalized = raw.trim();
+                let mut normalized = raw.trim();
+                if drop_leading_punct {
+                    normalized = normalized.trim_start_matches(|c: char| {
+                        c == ',' || c == ';' || c == ':' || c == ' ' || c == '\t'
+                    });
+                    drop_leading_punct = false;
+                }
                 if normalized.is_empty() {
                     continue;
                 }
@@ -222,18 +236,53 @@ fn render(marked: &str) -> String {
                 } else {
                     out.push_str(normalized);
                 }
+                last_was_clause = false;
             }
             Seg::Cmd(kind, payload) => match kind {
                 Kind::SentenceEnd => {
-                    trim_trailing_spaces(&mut out);
+                    // Drop a preceding model pause-comma ("working,?" -> "working?");
+                    // keep a comma the user dictated.
+                    if last_was_clause {
+                        trim_trailing_spaces(&mut out);
+                    } else {
+                        trim_trailing_comma(&mut out);
+                    }
                     out.push_str(payload);
                     cap_next = true;
                     glue = false;
+                    drop_leading_punct = true;
+                    last_was_clause = false;
                 }
-                Kind::Clause | Kind::Close => {
+                Kind::Break => {
+                    // Same rule: "version,\n" -> "version\n", but a dictated
+                    // "Dear John,\n\n" keeps its comma.
+                    if last_was_clause {
+                        trim_trailing_spaces(&mut out);
+                    } else {
+                        trim_trailing_comma(&mut out);
+                    }
+                    out.push_str(payload);
+                    cap_next = true;
+                    glue = false;
+                    drop_leading_punct = true;
+                    last_was_clause = false;
+                }
+                Kind::Clause => {
+                    trim_trailing_spaces(&mut out);
+                    // Don't double a comma the model already produced.
+                    if !out.ends_with(payload) {
+                        out.push_str(payload);
+                    }
+                    glue = false;
+                    drop_leading_punct = false;
+                    last_was_clause = true;
+                }
+                Kind::Close => {
                     trim_trailing_spaces(&mut out);
                     out.push_str(payload);
                     glue = false;
+                    drop_leading_punct = false;
+                    last_was_clause = false;
                 }
                 Kind::Open => {
                     if !out.is_empty() && !glue && !ends_with_space_or_newline(&out) {
@@ -241,17 +290,15 @@ fn render(marked: &str) -> String {
                     }
                     out.push_str(payload);
                     glue = true;
+                    drop_leading_punct = false;
+                    last_was_clause = false;
                 }
                 Kind::Tight => {
                     trim_trailing_spaces(&mut out);
                     out.push_str(payload);
                     glue = true;
-                }
-                Kind::Break => {
-                    trim_trailing_spaces(&mut out);
-                    out.push_str(payload);
-                    cap_next = true;
-                    glue = false;
+                    drop_leading_punct = false;
+                    last_was_clause = false;
                 }
                 Kind::Token => {
                     if payload == "\t" {
@@ -265,6 +312,8 @@ fn render(marked: &str) -> String {
                         out.push_str(payload);
                         glue = false;
                     }
+                    drop_leading_punct = false;
+                    last_was_clause = false;
                 }
             },
         }
@@ -282,6 +331,16 @@ fn ends_with_space_or_newline(s: &str) -> bool {
 fn trim_trailing_spaces(out: &mut String) {
     while out.ends_with(' ') || out.ends_with('\t') {
         out.pop();
+    }
+}
+
+/// Trim trailing whitespace plus one spurious pause-comma (a comma the speech
+/// model inserted at a pause, sitting right before a break or terminator).
+fn trim_trailing_comma(out: &mut String) {
+    trim_trailing_spaces(out);
+    if out.ends_with(',') {
+        out.pop();
+        trim_trailing_spaces(out);
     }
 }
 
@@ -392,5 +451,28 @@ mod tests {
     fn dollar_sign_replacement_is_literal() {
         // NoExpand guard: "$" must not be treated as a regex capture ref.
         assert_eq!(expand_default("pay dollar sign now"), "Pay $ now");
+    }
+
+    #[test]
+    fn strips_model_pause_commas_around_commands() {
+        // Parakeet inserts a comma at each pause where the user spoke a
+        // command; those pause-commas must not survive next to the break /
+        // terminator ("version,\n, How ...,?" -> clean).
+        assert_eq!(
+            expand_default(
+                "Testing the new version, new line, How is it working, question mark"
+            ),
+            "Testing the new version\nHow is it working?"
+        );
+    }
+
+    #[test]
+    fn keeps_dictated_comma_before_break() {
+        // A comma the user explicitly dictated (a "comma" command) is kept,
+        // unlike a model pause-comma.
+        assert_eq!(
+            expand_default("dear John comma new line thanks"),
+            "Dear John,\nThanks"
+        );
     }
 }

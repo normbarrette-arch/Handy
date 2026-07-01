@@ -218,8 +218,12 @@ fn render(marked: &str) -> String {
                 // in command-free text (a side effect beyond this feature).
                 let mut normalized = raw.trim();
                 if drop_leading_punct {
+                    // A line/sentence starting with pause punctuation (the model
+                    // added a comma/period/etc. where the user paused for a
+                    // command) is always spurious — strip it. A lone-punctuation
+                    // segment collapses to empty and is dropped below.
                     normalized = normalized.trim_start_matches(|c: char| {
-                        c == ',' || c == ';' || c == ':' || c == ' ' || c == '\t'
+                        matches!(c, ',' | ';' | ':' | '.' | '?' | '!' | ' ' | '\t')
                     });
                     drop_leading_punct = false;
                 }
@@ -319,9 +323,9 @@ fn render(marked: &str) -> String {
         }
     }
 
-    out.trim_start()
-        .trim_end_matches(|c: char| c == ' ' || c == '\t')
-        .to_string()
+    // Trim outer whitespace including stray leading/trailing newlines (e.g. a
+    // trailing "new line" pause or a dropped lone-punctuation segment).
+    out.trim().to_string()
 }
 
 fn ends_with_space_or_newline(s: &str) -> bool {
@@ -473,6 +477,19 @@ mod tests {
         assert_eq!(
             expand_default("dear John comma new line thanks"),
             "Dear John,\nThanks"
+        );
+    }
+
+    #[test]
+    fn strips_model_pause_periods_at_line_starts() {
+        // Parakeet non-deterministically emits a period (not a comma) at a
+        // pause; a period leading a new line, or a lone trailing one, is
+        // spurious and must be dropped.
+        assert_eq!(
+            expand_default(
+                "Writing the first test sentence new line. Writing the second test sentence new line."
+            ),
+            "Writing the first test sentence\nWriting the second test sentence"
         );
     }
 }

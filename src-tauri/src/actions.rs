@@ -321,6 +321,17 @@ pub(crate) async fn process_transcription_output(
         post_processed_text = Some(final_text.clone());
     }
 
+    // Final transform: expand spoken formatting commands ("new line",
+    // "period", …) into real characters. Runs after post-processing so it
+    // also catches command words the LLM left untouched, and is the sole
+    // formatter when post-processing is off. No-op when the feature is
+    // disabled. Deterministic — safe to run every time.
+    let expanded = crate::dictation_commands::expand(&final_text, &settings);
+    if expanded != final_text {
+        final_text = expanded;
+        post_processed_text = Some(final_text.clone());
+    }
+
     ProcessedTranscription {
         final_text,
         post_processed_text,

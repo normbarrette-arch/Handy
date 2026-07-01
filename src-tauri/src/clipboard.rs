@@ -31,6 +31,16 @@ fn paste_via_clipboard(
     let clipboard = app_handle.clipboard();
     let clipboard_content = clipboard.read_text().unwrap_or_default();
 
+    // Windows: classic Win32 edit controls (e.g. legacy Notepad) render line
+    // breaks only for CRLF. Normalize any newlines from spoken "new line" /
+    // "new paragraph" commands to \r\n. Modern apps accept \r\n too, so this
+    // is safe everywhere on Windows. (First collapse to \n so we never
+    // double an existing \r.)
+    #[cfg(target_os = "windows")]
+    let text_owned = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\r\n");
+    #[cfg(target_os = "windows")]
+    let text = text_owned.as_str();
+
     // Write text to clipboard first
     // On Wayland, prefer wl-copy for better compatibility (especially with umlauts)
     #[cfg(target_os = "linux")]

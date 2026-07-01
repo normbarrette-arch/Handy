@@ -6,6 +6,7 @@ import type {
   AudioDevice,
   WhisperAcceleratorSetting,
   OrtAcceleratorSetting,
+  SpokenCommand,
 } from "@/bindings";
 import { commands } from "@/bindings";
 
@@ -115,6 +116,10 @@ const settingUpdaters: {
     commands.changeOverlayPositionSetting(value as string),
   debug_mode: (value) => commands.changeDebugModeSetting(value as boolean),
   custom_words: (value) => commands.updateCustomWords(value as string[]),
+  spoken_commands_enabled: (value) =>
+    commands.changeSpokenCommandsEnabled(value as boolean),
+  spoken_commands: (value) =>
+    commands.updateSpokenCommands(value as SpokenCommand[]),
   word_correction_threshold: (value) =>
     commands.changeWordCorrectionThresholdSetting(value as number),
   paste_delay_ms: (value) =>

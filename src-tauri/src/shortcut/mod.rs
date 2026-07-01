@@ -678,6 +678,37 @@ pub fn update_custom_words(app: AppHandle, words: Vec<String>) -> Result<(), Str
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_spoken_commands_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.spoken_commands_enabled = enabled;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn update_spoken_commands(
+    app: AppHandle,
+    commands: Vec<settings::SpokenCommand>,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.spoken_commands = commands;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reset_spoken_commands(app: AppHandle) -> Result<Vec<settings::SpokenCommand>, String> {
+    let mut settings = settings::get_settings(&app);
+    let defaults = settings::default_spoken_commands();
+    settings.spoken_commands = defaults.clone();
+    settings::write_settings(&app, settings);
+    Ok(defaults)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn change_word_correction_threshold_setting(
     app: AppHandle,
     threshold: f64,

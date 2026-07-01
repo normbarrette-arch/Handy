@@ -93,6 +93,70 @@ pub struct LLMPrompt {
     pub prompt: String,
 }
 
+/// A spoken formatting command: when `phrase` is spoken it is replaced by
+/// `replacement` in the transcript (e.g. "new line" -> "\n", "period" -> ".").
+/// The spacing/capitalization behavior is inferred from `replacement` at
+/// expansion time (see `dictation_commands`), so users adding custom entries
+/// don't have to classify them.
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct SpokenCommand {
+    pub phrase: String,
+    pub replacement: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Built-in spoken formatting commands, seeded into settings on first use.
+/// Grouped: layout, sentence punctuation, extended symbols. Every entry is
+/// user-editable/removable afterward. Spacing behavior is derived from the
+/// replacement at expansion time (see `dictation_commands`).
+pub fn default_spoken_commands() -> Vec<SpokenCommand> {
+    let cmd = |phrase: &str, replacement: &str| SpokenCommand {
+        phrase: phrase.to_string(),
+        replacement: replacement.to_string(),
+        enabled: true,
+    };
+    vec![
+        // Layout
+        cmd("new paragraph", "\n\n"),
+        cmd("new line", "\n"),
+        cmd("tab key", "\t"),
+        cmd("tab", "\t"),
+        // Sentence punctuation
+        cmd("full stop", "."),
+        cmd("period", "."),
+        cmd("comma", ","),
+        cmd("question mark", "?"),
+        cmd("exclamation point", "!"),
+        cmd("exclamation mark", "!"),
+        cmd("colon", ":"),
+        cmd("semicolon", ";"),
+        // Extended symbols
+        cmd("open parenthesis", "("),
+        cmd("open paren", "("),
+        cmd("close parenthesis", ")"),
+        cmd("close paren", ")"),
+        cmd("open quote", "\""),
+        cmd("close quote", "\""),
+        cmd("ellipsis", "…"),
+        cmd("em dash", "—"),
+        cmd("hyphen", "-"),
+        cmd("forward slash", "/"),
+        cmd("slash", "/"),
+        cmd("ampersand", "&"),
+        cmd("at sign", "@"),
+        cmd("percent sign", "%"),
+        cmd("dollar sign", "$"),
+        cmd("pound sign", "#"),
+        cmd("hashtag", "#"),
+        cmd("asterisk", "*"),
+    ]
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct PostProcessProvider {
     pub id: String,
@@ -371,6 +435,15 @@ pub struct AppSettings {
     pub log_level: LogLevel,
     #[serde(default)]
     pub custom_words: Vec<String>,
+    /// When true, spoken formatting commands (e.g. "new line", "period") are
+    /// expanded into real characters in the final transcript.
+    #[serde(default = "default_true")]
+    pub spoken_commands_enabled: bool,
+    /// The active command table. Seeded from `default_spoken_commands()` on
+    /// first use so the UI shows every default; users can toggle/edit/remove
+    /// entries or add their own.
+    #[serde(default = "default_spoken_commands")]
+    pub spoken_commands: Vec<SpokenCommand>,
     #[serde(default)]
     pub model_unload_timeout: ModelUnloadTimeout,
     #[serde(default = "default_word_correction_threshold")]
@@ -784,6 +857,8 @@ pub fn get_default_settings() -> AppSettings {
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
+        spoken_commands_enabled: true,
+        spoken_commands: default_spoken_commands(),
         model_unload_timeout: ModelUnloadTimeout::default(),
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),

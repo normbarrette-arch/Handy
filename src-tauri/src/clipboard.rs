@@ -14,8 +14,10 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 /// After sending the paste keystroke we must hold the injected text on the
 /// clipboard long enough for the target app to read it before we restore
 /// the user's original clipboard contents. Too short and fast apps paste
-/// stale/empty; this is a deliberate guard, not an arbitrary sleep.
-const CLIPBOARD_RESTORE_GUARD_MS: u64 = 50;
+/// stale/empty; this is a deliberate guard, not an arbitrary sleep. 25ms is
+/// ample for the target's paste handler to read the clipboard while keeping
+/// the per-paste latency (and UI-thread block) low.
+const CLIPBOARD_RESTORE_GUARD_MS: u64 = 25;
 
 #[cfg(target_os = "linux")]
 use crate::utils::{is_kde_wayland, is_wayland};

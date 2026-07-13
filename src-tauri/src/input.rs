@@ -2,6 +2,12 @@ use enigo::{Enigo, Key, Keyboard, Mouse, Settings};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
+/// How long to hold the paste modifier (Ctrl/Cmd) down after clicking V before
+/// releasing it. Apps need the combo registered while the modifier is down; the
+/// previous 100ms was far more than any target needs (~10-30ms is the usual
+/// synthetic-input convention) and it ran on the UI thread on every paste.
+const PASTE_MODIFIER_HOLD_MS: u64 = 30;
+
 /// Wrapper for Enigo to store in Tauri's managed state.
 /// Enigo is wrapped in a Mutex since it requires mutable access.
 pub struct EnigoState(pub Mutex<Enigo>);
@@ -42,7 +48,7 @@ pub fn send_paste_ctrl_v(enigo: &mut Enigo) -> Result<(), String> {
         .key(v_key_code, enigo::Direction::Click)
         .map_err(|e| format!("Failed to click V key: {}", e))?;
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(PASTE_MODIFIER_HOLD_MS));
 
     enigo
         .key(modifier_key, enigo::Direction::Release)
@@ -74,7 +80,7 @@ pub fn send_paste_ctrl_shift_v(enigo: &mut Enigo) -> Result<(), String> {
         .key(v_key_code, enigo::Direction::Click)
         .map_err(|e| format!("Failed to click V key: {}", e))?;
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(PASTE_MODIFIER_HOLD_MS));
 
     enigo
         .key(Key::Shift, enigo::Direction::Release)
@@ -103,7 +109,7 @@ pub fn send_paste_shift_insert(enigo: &mut Enigo) -> Result<(), String> {
         .key(insert_key_code, enigo::Direction::Click)
         .map_err(|e| format!("Failed to click Insert key: {}", e))?;
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(PASTE_MODIFIER_HOLD_MS));
 
     enigo
         .key(Key::Shift, enigo::Direction::Release)

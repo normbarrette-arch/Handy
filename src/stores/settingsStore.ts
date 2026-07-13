@@ -10,6 +10,14 @@ import type {
 } from "@/bindings";
 import { commands } from "@/bindings";
 
+// Idempotency guard for initialize(): useSettings() is mounted by ~20
+// components that all call initialize() during the async loading window.
+// Without this guard each call re-ran the startup IPC AND registered another
+// "model-state-changed" listener, so every model-state change fanned out into
+// N refreshSettings() calls. Module-scoped (not store state) so it survives
+// re-renders and needs no store-shape change.
+let initStarted = false;
+
 interface SettingsStore {
   settings: Settings | null;
   defaultSettings: Settings | null;
@@ -293,7 +301,13 @@ export const useSettingsStore = create<SettingsStore>()(
         const updater = settingUpdaters[key];
         if (updater) {
           await updater(value);
-        } else if (key !== "bindings" && key !== "selected_model") {
+        } else if (
+          key !== "bindings" &&
+          key !== "selected_model" &&
+          // model_unload_timeout persists via its own dedicated command; the
+          // optimistic local update here is expected to have no map handler.
+          key !== "model_unload_timeout"
+        ) {
           console.warn(`No handler for setting: ${String(key)}`);
         }
       } catch (error) {
@@ -579,6 +593,8 @@ export const useSettingsStore = create<SettingsStore>()(
 
     // Initialize everything
     initialize: async () => {
+      if (initStarted) return;
+      initStarted = true;
       const { refreshSettings, checkCustomSounds, loadDefaultSettings } = get();
 
       // Note: Audio devices are NOT refreshed here. The frontend (App.tsx)

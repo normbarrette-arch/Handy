@@ -22,7 +22,13 @@ const RecordingOverlay: React.FC = () => {
   const direction = getLanguageDirection(i18n.language);
 
   useEffect(() => {
-    const setupEventListeners = async () => {
+    // The async setup returns its unlisten fns to the Promise, which React
+    // never sees — so store them here and clean up synchronously. `cancelled`
+    // guards the StrictMode double-invoke and unmount-before-ready race.
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
       // Listen for show-overlay event from Rust
       const unlistenShow = await listen("show-overlay", async (event) => {
         // Sync language from settings each time overlay is shown
@@ -51,15 +57,23 @@ const RecordingOverlay: React.FC = () => {
         setLevels(smoothed.slice(0, 9));
       });
 
-      // Cleanup function
-      return () => {
+      if (cancelled) {
+        unlistenShow();
+        unlistenHide();
+        unlistenLevel();
+        return;
+      }
+      cleanup = () => {
         unlistenShow();
         unlistenHide();
         unlistenLevel();
       };
-    };
+    })();
 
-    setupEventListeners();
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
   }, []);
 
   const getIcon = () => {

@@ -151,6 +151,22 @@ function App() {
     };
   }, [t]);
 
+  // Listen for transcription failures so they're never silent (the top
+  // complaint in long-recording reports). A "long-recording:<secs>" payload
+  // means the likely cause was recording length — surface that hint.
+  useEffect(() => {
+    const unlisten = listen<string>("transcription-failed", (event) => {
+      const payload = event.payload ?? "";
+      const description = payload.startsWith("long-recording:")
+        ? t("errors.transcriptionFailedLong")
+        : t("errors.transcriptionFailed");
+      toast.error(t("errors.transcriptionFailedTitle"), { description });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [t]);
+
   // Listen for model loading failures and show a toast
   useEffect(() => {
     const unlisten = listen<ModelStateEvent>("model-state-changed", (event) => {

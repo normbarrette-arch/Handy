@@ -598,6 +598,9 @@
     "dismiss": "닫기"
   },
   "errors": {
+    "transcriptionFailedTitle": "Transcription Failed",
+    "transcriptionFailed": "The recording could not be transcribed. It has been saved to History so you can retry.",
+    "transcriptionFailedLong": "The recording was long, which can cause transcription to fail. Try shorter recordings; it's been saved to History.",
     "focusRestoreFailedTitle": "Could Not Restore Focus",
     "focusRestoreFailed": "Windows blocked focus from returning to your app — the text may have landed in the wrong window.",
     "loadDirectory": "디렉토리 로딩 오류: {{error}}",

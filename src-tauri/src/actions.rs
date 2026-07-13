@@ -581,7 +581,7 @@ impl ShortcutAction for TranscribeAction {
                             }
                         }
                         Err(err) => {
-                            debug!("Global Shortcut Transcription error: {}", err);
+                            error!("Global Shortcut Transcription error: {}", err);
                             // Save entry with empty text so user can retry
                             if wav_saved {
                                 if let Err(save_err) = hm.save_entry(
@@ -594,6 +594,17 @@ impl ShortcutAction for TranscribeAction {
                                     error!("Failed to save failed history entry: {}", save_err);
                                 }
                             }
+                            // Surface the failure instead of silently dropping it (the
+                            // top complaint in upstream long-recording reports). Long
+                            // recordings are the common trigger — hint at that so the
+                            // user knows to retry shorter or from history.
+                            let secs = sample_count as f64 / 16_000.0;
+                            let payload = if secs >= 30.0 {
+                                format!("long-recording:{:.0}", secs)
+                            } else {
+                                String::new()
+                            };
+                            let _ = ah.emit("transcription-failed", payload);
                             utils::hide_recording_overlay(&ah);
                             change_tray_icon(&ah, TrayIconState::Idle);
                         }

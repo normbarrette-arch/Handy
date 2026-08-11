@@ -139,6 +139,30 @@ fn force_overlay_topmost(overlay_window: &tauri::webview::WebviewWindow) {
     });
 }
 
+/// Sets WS_EX_NOACTIVATE on the overlay HWND (Windows only) so the window
+/// can never receive activation/keyboard focus, by Win32 contract rather
+/// than by convention. `.focused(false)` on the builder only affects the
+/// window's initial show state; it doesn't prevent a later show() from
+/// activating it. Set once at creation, on the main thread (window is
+/// freshly built here, so no run_on_main_thread hop needed).
+#[cfg(target_os = "windows")]
+fn set_overlay_noactivate(overlay_window: &tauri::webview::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+    };
+
+    if let Ok(hwnd) = overlay_window.hwnd() {
+        unsafe {
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_EXSTYLE,
+                ex_style | (WS_EX_NOACTIVATE.0 as isize),
+            );
+        }
+    }
+}
+
 fn get_monitor_with_cursor(app_handle: &AppHandle) -> Option<tauri::Monitor> {
     if let Some(mouse_location) = input::get_cursor_position(app_handle) {
         if let Ok(monitors) = app_handle.available_monitors() {
@@ -273,6 +297,16 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
                     debug!("GTK layer shell not available, falling back to regular window");
                 }
             }
+
+            // `.focused(false)` + the SWP_NOACTIVATE reassertion in
+            // force_overlay_topmost() are both best-effort hints, not a Win32
+            // guarantee. WS_EX_NOACTIVATE is: it tells Windows this window
+            // can never be activated, closing the race between show() and
+            // the topmost call where a WebView2 host (e.g. new Outlook's
+            // compose pane) can lose its internal focus/caret registration
+            // even though the foreground window never changes.
+            #[cfg(target_os = "windows")]
+            set_overlay_noactivate(&window);
 
             debug!("Recording overlay window created successfully (hidden)");
         }

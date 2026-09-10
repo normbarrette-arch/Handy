@@ -24,20 +24,9 @@ use transcribe_rs::{
         sense_voice::{SenseVoiceModel, SenseVoiceParams},
         Quantization,
     },
-    transcriber::{Transcriber, VadChunked, VadChunkedConfig},
-    vad::{EnergyVad, SmoothedVad},
     whisper_cpp::{WhisperEngine, WhisperInferenceParams},
-    ModelCapabilities, SpeechModel, TranscribeError, TranscribeOptions, TranscriptionResult,
+    SpeechModel, TranscribeOptions,
 };
-
-/// Audio at or above this length is routed through [`VadChunked`] instead of
-/// a single engine call. Every local engine caps its effective context
-/// somewhere around 30s (Parakeet's mel windowing, Whisper's 30s window);
-/// past that, a single call silently truncates, drops audio, or (for some
-/// engines) errors outright. Recordings shorter than this are untouched —
-/// same single-call path as before.
-const CHUNK_THRESHOLD_SECS: f32 = 30.0;
-const SAMPLE_RATE: f32 = 16_000.0;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelStateEvent {
@@ -56,92 +45,6 @@ enum LoadedEngine {
     GigaAM(GigaAMModel),
     Canary(CanaryModel),
     Cohere(CohereModel),
-}
-
-/// Forwards to whichever engine is loaded, so [`VadChunked`] can drive any
-/// of them through the single generic `SpeechModel` interface. This is the
-/// same trait every engine already implements directly — this impl only
-/// adds the enum-dispatch layer `LoadedEngine` needs to hand a trait object
-/// to a chunker without a per-engine match at every call site.
-///
-/// Only `transcribe_raw`, `capabilities`, and the two silence-padding
-/// defaults are forwarded (the full `SpeechModel` trait). Engine-specific
-/// extras that live outside this trait — Whisper's `initial_prompt`,
-/// Parakeet's `timestamp_granularity`, SenseVoice's `use_itn` — are not
-/// reachable this way; see the custom-words handling in `transcribe()`
-/// for how the Whisper case is compensated for on the chunked path.
-impl SpeechModel for LoadedEngine {
-    fn capabilities(&self) -> ModelCapabilities {
-        match self {
-            LoadedEngine::Whisper(e) => e.capabilities(),
-            LoadedEngine::Parakeet(e) => e.capabilities(),
-            LoadedEngine::Moonshine(e) => e.capabilities(),
-            LoadedEngine::MoonshineStreaming(e) => e.capabilities(),
-            LoadedEngine::SenseVoice(e) => e.capabilities(),
-            LoadedEngine::GigaAM(e) => e.capabilities(),
-            LoadedEngine::Canary(e) => e.capabilities(),
-            LoadedEngine::Cohere(e) => e.capabilities(),
-        }
-    }
-
-    fn default_leading_silence_ms(&self) -> u32 {
-        match self {
-            LoadedEngine::Whisper(e) => e.default_leading_silence_ms(),
-            LoadedEngine::Parakeet(e) => e.default_leading_silence_ms(),
-            LoadedEngine::Moonshine(e) => e.default_leading_silence_ms(),
-            LoadedEngine::MoonshineStreaming(e) => e.default_leading_silence_ms(),
-            LoadedEngine::SenseVoice(e) => e.default_leading_silence_ms(),
-            LoadedEngine::GigaAM(e) => e.default_leading_silence_ms(),
-            LoadedEngine::Canary(e) => e.default_leading_silence_ms(),
-            LoadedEngine::Cohere(e) => e.default_leading_silence_ms(),
-        }
-    }
-
-    fn default_trailing_silence_ms(&self) -> u32 {
-        match self {
-            LoadedEngine::Whisper(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::Parakeet(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::Moonshine(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::MoonshineStreaming(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::SenseVoice(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::GigaAM(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::Canary(e) => e.default_trailing_silence_ms(),
-            LoadedEngine::Cohere(e) => e.default_trailing_silence_ms(),
-        }
-    }
-
-    fn transcribe_raw(
-        &mut self,
-        samples: &[f32],
-        options: &TranscribeOptions,
-    ) -> Result<TranscriptionResult, TranscribeError> {
-        match self {
-            LoadedEngine::Whisper(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::Parakeet(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::Moonshine(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::MoonshineStreaming(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::SenseVoice(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::GigaAM(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::Canary(e) => e.transcribe_raw(samples, options),
-            LoadedEngine::Cohere(e) => e.transcribe_raw(samples, options),
-        }
-    }
-}
-
-/// Builds the VAD used to find chunk-split points in long recordings.
-///
-/// Plain RMS energy, not the app's own Silero VAD (`audio_toolkit::vad`) —
-/// that trait is a different shape (`VoiceActivityDetector`, not
-/// transcribe-rs's own `Vad`) and pulling Silero in here would mean a new
-/// `vad-silero` Cargo feature plus routing it to the already-bundled
-/// `silero_vad_v4.onnx`, unverified without a local build. EnergyVad only
-/// has to find a plausible pause inside audio Handy's own capture-time
-/// endpointing already confirmed contains speech — it doesn't have to
-/// discriminate speech from noise the way the capture-time VAD does.
-/// Threshold matches transcribe-rs's own tests; may need tuning against
-/// real dictation.
-fn build_chunk_vad() -> SmoothedVad {
-    SmoothedVad::new(Box::new(EnergyVad::new(480, 0.01)), 15, 15, 2)
 }
 
 /// RAII guard that clears the `is_loading` flag and notifies waiters on drop.
@@ -620,58 +523,8 @@ impl TranscriptionManager {
             // Release the lock before transcribing — no mutex held during the engine call
             drop(engine_guard);
 
-            // Route long recordings through VadChunked instead of one call —
-            // every local engine's effective context caps out around 30s
-            // (mel windowing, fixed decode windows); past that a single
-            // call silently truncates or drops audio. Cohere is remote and
-            // excluded: chunking it means N sequential HTTP round trips
-            // instead of one, a latency/cost tradeoff that needs an
-            // explicit opt-in, not a silent default.
-            let audio_secs = audio.len() as f32 / SAMPLE_RATE;
-            let used_chunking =
-                !matches!(engine, LoadedEngine::Cohere(_)) && audio_secs >= CHUNK_THRESHOLD_SECS;
-            if used_chunking {
-                info!(
-                    "Audio is {:.1}s (>= {:.0}s threshold) — routing through VadChunked",
-                    audio_secs, CHUNK_THRESHOLD_SECS
-                );
-            }
-
             let transcribe_result = catch_unwind(AssertUnwindSafe(
                 || -> Result<transcribe_rs::TranscriptionResult> {
-                    if used_chunking {
-                        let chunk_language = if validated_language == "auto" {
-                            None
-                        } else if validated_language == "zh-Hans"
-                            || validated_language == "zh-Hant"
-                        {
-                            Some("zh".to_string())
-                        } else {
-                            Some(validated_language.clone())
-                        };
-                        let options = TranscribeOptions {
-                            language: chunk_language,
-                            translate: settings.translate_to_english,
-                            ..Default::default()
-                        };
-                        // padding_secs must be set explicitly: VadChunked
-                        // always passes Some(padding_ms) per chunk, which
-                        // overrides (not just defaults) each engine's own
-                        // leading-silence padding — e.g. Parakeet's 250ms
-                        // default would otherwise be silently replaced
-                        // with 0, clipping every chunk's start.
-                        let config = VadChunkedConfig {
-                            max_chunk_secs: CHUNK_THRESHOLD_SECS,
-                            smart_split_search_secs: Some(2.0),
-                            padding_secs: 0.25,
-                            ..Default::default()
-                        };
-                        let mut chunker = VadChunked::new(Box::new(build_chunk_vad()), config, options);
-                        return chunker
-                            .transcribe(&mut engine, &audio)
-                            .map_err(|e| anyhow::anyhow!("Chunked transcription failed: {}", e));
-                    }
-
                     match &mut engine {
                         LoadedEngine::Whisper(whisper_engine) => {
                             let whisper_language = if validated_language == "auto" {
@@ -830,18 +683,12 @@ impl TranscriptionManager {
         };
 
         // Apply word correction if custom words are configured.
-        // Skip for Whisper models since custom words are already passed as
-        // initial_prompt — except on the chunked path, where that prompt
-        // is never reachable (VadChunked only carries the generic
-        // TranscribeOptions), so chunked Whisper needs the same fuzzy
-        // correction pass every other engine gets.
-        let used_chunking = audio.len() as f32 / SAMPLE_RATE >= CHUNK_THRESHOLD_SECS;
-        let is_whisper = !used_chunking
-            && self
-                .model_manager
-                .get_model_info(&settings.selected_model)
-                .map(|info| matches!(info.engine_type, EngineType::Whisper))
-                .unwrap_or(false);
+        // Skip for Whisper models since custom words are already passed as initial_prompt.
+        let is_whisper = self
+            .model_manager
+            .get_model_info(&settings.selected_model)
+            .map(|info| matches!(info.engine_type, EngineType::Whisper))
+            .unwrap_or(false);
 
         let corrected_result = if !settings.custom_words.is_empty() && !is_whisper {
             apply_custom_words(

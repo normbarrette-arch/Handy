@@ -599,8 +599,8 @@
   },
   "errors": {
     "transcriptionFailedTitle": "Transcription Failed",
-    "transcriptionFailed": "The recording could not be transcribed. It has been saved to History so you can retry.",
-    "transcriptionFailedLong": "The recording was long, which can cause transcription to fail. Try shorter recordings; it's been saved to History.",
+    "transcriptionFailed": "The recording could not be transcribed. Check History to retry it.",
+    "transcriptionFailedLong": "The recording was long, which can cause transcription to fail. Try a shorter recording, or check History to retry.",
     "loadDirectory": "Error loading directory: {{error}}",
     "micPermissionDeniedTitle": "Microphone Access Denied",
     "micPermissionDenied": {

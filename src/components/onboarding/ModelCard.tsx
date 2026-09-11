@@ -302,6 +302,4 @@ const ModelCard: React.FC<ModelCardProps> = ({
   );
 };
 
-// Memoized: parent model views re-render several times/second during a
-// download (progress ticks). Without this, all ~10 cards re-render each tick.
-export default React.memo(ModelCard);
+export default ModelCard;

@@ -52,6 +52,22 @@
   opacity: 1;
 }
 
+/* Hotkey pressed but not ready yet: microphone still opening and/or the
+   speech model still loading. Greyed until ready. The transition is slow
+   enough that a near-instant "ready" never visibly flickers. */
+.recording-overlay .overlay-left,
+.recording-overlay .overlay-middle {
+  transition:
+    filter 200ms ease-out,
+    opacity 200ms ease-out;
+}
+
+.recording-overlay.preparing .overlay-left,
+.recording-overlay.preparing .overlay-middle {
+  filter: grayscale(1);
+  opacity: 0.35;
+}
+
 .transcribing-text {
   color: white;
   font-size: 12px;

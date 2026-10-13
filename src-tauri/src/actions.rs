@@ -9,7 +9,8 @@ use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID}
 use crate::shortcut;
 use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::{
-    self, show_processing_overlay, show_recording_overlay, show_transcribing_overlay,
+    self, show_preparing_overlay, show_processing_overlay, show_recording_overlay_if_current,
+    show_transcribing_overlay,
 };
 use crate::TranscriptionCoordinator;
 use ferrous_opencc::{config::BuiltinConfig, OpenCC};
@@ -344,12 +345,13 @@ impl ShortcutAction for TranscribeAction {
         let start_time = Instant::now();
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
-        // Load model in the background
         let tm = app.state::<Arc<TranscriptionManager>>();
         let rm = app.state::<Arc<AudioRecordingManager>>();
 
-        // Load ASR model and VAD model in parallel
-        tm.initiate_model_load();
+        // Warm the (small) voice-activity model in parallel. The speech model
+        // itself is loaded further down, once the microphone is open: that
+        // load is heavy enough to delay the microphone by seconds when the
+        // PC is busy, which clipped the start of speech.
         let rm_clone = Arc::clone(&rm);
         std::thread::spawn(move || {
             if let Err(e) = rm_clone.preload_vad() {
@@ -359,7 +361,9 @@ impl ShortcutAction for TranscribeAction {
 
         let binding_id = binding_id.to_string();
         change_tray_icon(app, TrayIconState::Recording);
-        show_recording_overlay(app);
+        // Dimmed until the microphone is capturing and the speech model is
+        // loaded; flipped to the normal look by the watcher below.
+        let overlay_session = show_preparing_overlay(app);
 
         // Get the microphone mode to determine audio feedback timing
         let settings = get_settings(app);
@@ -413,6 +417,20 @@ impl ShortcutAction for TranscribeAction {
         if recording_error.is_none() {
             // Dynamically register the cancel shortcut in a separate task to avoid deadlock
             shortcut::register_cancel_shortcut(app);
+
+            // Microphone is capturing — now load the speech model, and switch
+            // the overlay from dimmed to normal once it is ready to process
+            // speech. Audio spoken in the meantime is buffered, not lost.
+            tm.initiate_model_load();
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                let tm = app_clone.state::<Arc<TranscriptionManager>>();
+                tm.wait_until_loaded(std::time::Duration::from_secs(60));
+                let rm = app_clone.state::<Arc<AudioRecordingManager>>();
+                if rm.is_recording() {
+                    show_recording_overlay_if_current(&app_clone, overlay_session);
+                }
+            });
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.

@@ -11,7 +11,7 @@ import { commands } from "@/bindings";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-type OverlayState = "recording" | "transcribing" | "processing";
+type OverlayState = "preparing" | "recording" | "transcribing" | "processing";
 
 const RecordingOverlay: React.FC = () => {
   const { t } = useTranslation();
@@ -77,7 +77,7 @@ const RecordingOverlay: React.FC = () => {
   }, []);
 
   const getIcon = () => {
-    if (state === "recording") {
+    if (state === "recording" || state === "preparing") {
       return <MicrophoneIcon />;
     } else {
       return <TranscriptionIcon />;
@@ -87,12 +87,14 @@ const RecordingOverlay: React.FC = () => {
   return (
     <div
       dir={direction}
-      className={`recording-overlay ${isVisible ? "fade-in" : ""}`}
+      className={`recording-overlay ${isVisible ? "fade-in" : ""} ${
+        state === "preparing" ? "preparing" : ""
+      }`}
     >
       <div className="overlay-left">{getIcon()}</div>
 
       <div className="overlay-middle">
-        {state === "recording" && (
+        {(state === "recording" || state === "preparing") && (
           <div className="bars-container">
             {levels.map((v, i) => (
               <div
@@ -116,7 +118,7 @@ const RecordingOverlay: React.FC = () => {
       </div>
 
       <div className="overlay-right">
-        {state === "recording" && (
+        {(state === "recording" || state === "preparing") && (
           <div
             className="cancel-button"
             onClick={() => {

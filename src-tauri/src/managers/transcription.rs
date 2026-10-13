@@ -432,6 +432,19 @@ impl TranscriptionManager {
         });
     }
 
+    /// Blocks until any in-flight model load has finished, or `timeout`
+    /// elapses. Returns whether a model is loaded afterwards. Returns
+    /// immediately when nothing is loading.
+    pub fn wait_until_loaded(&self, timeout: Duration) -> bool {
+        let guard = self.is_loading.lock().unwrap();
+        // Result is only the re-acquired guard + timeout flag; the loaded
+        // state is re-checked below, so a poisoned lock or timeout is fine.
+        let _ = self
+            .loading_condvar
+            .wait_timeout_while(guard, timeout, |loading| *loading);
+        self.is_model_loaded()
+    }
+
     pub fn get_current_model(&self) -> Option<String> {
         let current_model = self.current_model_id.lock().unwrap();
         current_model.clone()

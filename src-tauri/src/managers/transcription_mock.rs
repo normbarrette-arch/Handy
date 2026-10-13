@@ -53,6 +53,10 @@ impl TranscriptionManager {
 
     pub fn initiate_model_load(&self) {}
 
+    pub fn wait_until_loaded(&self, _timeout: std::time::Duration) -> bool {
+        false
+    }
+
     pub fn get_current_model(&self) -> Option<String> {
         None
     }

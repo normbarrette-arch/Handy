@@ -1,6 +1,7 @@
 use crate::input;
 use crate::settings;
 use crate::settings::OverlayPosition;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 #[cfg(not(target_os = "macos"))]
@@ -373,18 +374,38 @@ fn show_overlay_state(app_handle: &AppHandle, state: &str) {
     }
 }
 
-/// Shows the recording overlay window with fade-in animation
-pub fn show_recording_overlay(app_handle: &AppHandle) {
-    show_overlay_state(app_handle, "recording");
+/// Identifies the current "getting ready" phase of a recording. It changes
+/// whenever the overlay moves on (transcribing, processing, hidden), so a
+/// watcher that finishes late can tell its recording is already over and
+/// must not flip the overlay back to the ready look.
+static READY_SESSION: AtomicU64 = AtomicU64::new(0);
+
+/// Shows the overlay dimmed: the hotkey was pressed but the microphone is
+/// not yet capturing and/or the speech model is still loading. Returns an
+/// id to pass to [`show_recording_overlay_if_current`] once ready.
+pub fn show_preparing_overlay(app_handle: &AppHandle) -> u64 {
+    let session = READY_SESSION.fetch_add(1, Ordering::SeqCst) + 1;
+    show_overlay_state(app_handle, "preparing");
+    session
+}
+
+/// Flips a dimmed overlay to the normal recording look, but only if it is
+/// still the same recording that [`show_preparing_overlay`] started.
+pub fn show_recording_overlay_if_current(app_handle: &AppHandle, session: u64) {
+    if READY_SESSION.load(Ordering::SeqCst) == session {
+        show_overlay_state(app_handle, "recording");
+    }
 }
 
 /// Shows the transcribing overlay window
 pub fn show_transcribing_overlay(app_handle: &AppHandle) {
+    READY_SESSION.fetch_add(1, Ordering::SeqCst);
     show_overlay_state(app_handle, "transcribing");
 }
 
 /// Shows the processing overlay window
 pub fn show_processing_overlay(app_handle: &AppHandle) {
+    READY_SESSION.fetch_add(1, Ordering::SeqCst);
     show_overlay_state(app_handle, "processing");
 }
 
@@ -405,6 +426,7 @@ pub fn update_overlay_position(app_handle: &AppHandle) {
 
 /// Hides the recording overlay window with fade-out animation
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    READY_SESSION.fetch_add(1, Ordering::SeqCst);
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
